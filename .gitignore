@@ -23,6 +23,3 @@ dist-ssr
 *.sln
 *.sw?
 
-# Chave de assinatura dos APKs: só no segredo KEYSTORE_BASE64 do GitHub, nunca no repositório
-*.keystore
-*.jks

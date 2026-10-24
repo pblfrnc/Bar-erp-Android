@@ -21,25 +21,21 @@ Este repositório é o canal oficial dos APKs:
 2. Os apps instalados consultam esse `version.json` a cada 30 minutos (e ao voltar para o app). Quando há versão
    nova aparece um aviso; o app baixa o APK e abre o instalador do Android.
 
-A versão é `<major.minor do package.json>.<número do build>` — começa em **2.1.0**. Para abrir uma versão nova
-(ex.: 2.2), mude o `version` do `package.json` e ponha em `PRIMEIRO_BUILD`, no workflow, o número do próximo build.
+A versão começa em **2.1.0** e cada publicação soma 1 no último número (builds que falham não contam). Para abrir
+uma versão nova (ex.: 2.2), mude o `version` do `package.json` para `2.2.0`: a contagem volta a `.0`.
 
 > ⚠️ Cada push na `main` gera uma versão que chega a todos os celulares. Trabalhe numa branch e só leve para a
 > `main` o que estiver testado.
 
-### Segredos necessários (uma vez só)
+### Chave de assinatura
 
-Em **Settings → Secrets and variables → Actions → New repository secret**:
+Os APKs são assinados com o `android/app/release.keystore` (alias `barerp`, senha `barerp123`), **a mesma chave**
+dos APKs já instalados: com outra chave o Android recusa a atualização e o app teria que ser desinstalado e
+instalado de novo em cada celular. Sem a chave o build para com erro, de propósito.
 
-| Segredo | Valor |
-|---|---|
-| `KEYSTORE_BASE64` | O arquivo `release.keystore` atual em base64 (`base64 -w0 release.keystore`) |
-| `KEYSTORE_PASSWORD` | Senha da keystore |
-| `KEY_PASSWORD` | Senha da chave (alias `barerp`) |
-
-Tem que ser **a mesma chave** dos APKs já instalados: com outra chave o Android recusa a atualização e o app teria
-que ser desinstalado e instalado de novo em cada celular. Sem o segredo o build para com erro, de propósito.
-A chave **nunca** vai para o repositório (o `.gitignore` bloqueia `*.keystore` e `*.jks`).
+Para não deixar a chave no código público, dá para usar segredos em **Settings → Secrets and variables → Actions**:
+`KEYSTORE_BASE64` (o arquivo em base64), `KEYSTORE_PASSWORD` e `KEY_PASSWORD`. Com o segredo cadastrado, ele vale
+no lugar do arquivo.
 
 ### Celulares que já têm o app
 
