@@ -4,6 +4,7 @@ import { api } from '../services/api';
 import { printOrderReceipt, printButtonLabel } from '../services/printService';
 import { PAYMENT_LABELS } from './ThermalReceipt';
 import { modifiersLabel } from '../utils/pricing';
+import { isWaiterApp } from '../services/appMode';
 import {
   X,
   Printer,
@@ -33,6 +34,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 }) => {
   const [currentOrder, setCurrentOrder] = useState<Order | null>(table?.activeOrder || null);
   const order = currentOrder;
+  // No app do garçom o desconto fica bloqueado, mesmo que alguém passe isManager
+  const canDiscount = isManager && !isWaiterApp;
   const remainingBalance = Math.max(0, (order?.total || 0) - (order?.paidAmount || 0));
 
   // Estados de divisão
@@ -139,7 +142,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
   // Aplicar desconto
   const handleApplyDiscount = async () => {
-    if (!order) return;
+    if (!order || !canDiscount) return;
     const val = parseFloat(discountValue.replace(',', '.')) || 0;
     try {
       const updated = await api.applyDiscount(order.id, val);
@@ -328,7 +331,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
             </div>
 
             {/* Desconto */}
-            {isManager && (
+            {canDiscount && (
               <div className="flex items-center justify-between text-sm">
                 <span className="text-slate-700 dark:text-slate-300">Desconto:</span>
                 <div className="flex items-center gap-2">

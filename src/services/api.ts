@@ -23,6 +23,7 @@ import {
 
 
 import { getServerBaseUrl } from './socket';
+import { isWaiterApp, WAITER_DISCOUNT_BLOCKED } from './appMode';
 
 function getApiUrl(): string {
   return `${getServerBaseUrl()}/api`;
@@ -163,7 +164,9 @@ export const api = {
     }).then(handleResponse<Order>),
 
   applyDiscount: (orderId: string, discount: number): Promise<Order> =>
-    fetchWithRetry(`${getApiUrl()}/orders/${orderId}/discount`, {
+    isWaiterApp
+      ? Promise.reject(new Error(WAITER_DISCOUNT_BLOCKED))
+      : fetchWithRetry(`${getApiUrl()}/orders/${orderId}/discount`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ discount })
@@ -185,7 +188,9 @@ export const api = {
     customerName?: string;
     discount?: number;
   }): Promise<{ success: boolean; order: Order; change: number; message: string }> =>
-    fetchWithRetry(`${getApiUrl()}/orders/quick-sale`, {
+    isWaiterApp && (data.discount || 0) > 0
+      ? Promise.reject(new Error(WAITER_DISCOUNT_BLOCKED))
+      : fetchWithRetry(`${getApiUrl()}/orders/quick-sale`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
