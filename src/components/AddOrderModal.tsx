@@ -1,0 +1,563 @@
+import React, { useState, useEffect } from 'react';
+import { Table, Product, Category, ModifierOption } from '../types';
+import { api } from '../services/api';
+import { useActivePromotions } from '../services/promotions';
+import { productModifierGroups } from '../utils/pricing';
+import { ModifierPickerModal } from './ModifierPickerModal';
+import {
+  X,
+  Search,
+  Plus,
+  Minus,
+  Trash2,
+  Send,
+  Beer,
+  Wine,
+  Flame,
+  UtensilsCrossed,
+  Beef,
+  GlassWater,
+  Sparkles,
+  Check,
+  Package,
+  Tag
+} from 'lucide-react';
+
+interface AddOrderModalProps {
+  table: Table | null;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+interface CartItem {
+  key: string; // produto + unidade/caixa + opções escolhidas
+  product: Product;
+  quantity: number;
+  unitType: 'UNIT' | 'BOX';
+  options: ModifierOption[];
+  notes: string;
+}
+
+const cartKey = (productId: string, unitType: 'UNIT' | 'BOX', options: ModifierOption[]) =>
+  `${productId}|${unitType}|${options.map((o) => o.id).sort().join(',')}`;
+
+export const AddOrderModal: React.FC<AddOrderModalProps> = ({
+  table,
+  onClose,
+  onSuccess
+}) => {
+  const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('ALL');
+  const [search, setSearch] = useState<string>('');
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [pickerProduct, setPickerProduct] = useState<Product | null>(null);
+  const { priceFor } = useActivePromotions();
+
+  // Preço calculado na hora: se a promoção do dia começar/terminar com o carrinho aberto, a tela acompanha
+  const linePrice = (item: CartItem) =>
+    item.unitType === 'BOX'
+      ? Number(item.product.boxPrice)
+      : priceFor(item.product).price + item.options.reduce((acc, o) => acc + o.price, 0);
+
+  // Chips de observações rápidas para agilizar o atendimento
+  const quickObservationChips = [
+    'Com gelo e limão',
+    'Sem gelo',
+    'Bem gelada',
+    'Sem cebola',
+    'Ponto: Ao Ponto',
+    'Ponto: Mal Passada',
+    'Gelo extra',
+    'Molho à parte'
+  ];
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      const [cats, prods] = await Promise.all([
+        api.getCategories(),
+        api.getProducts()
+      ]);
+      setCategories(cats);
+      setProducts(prods);
+      // Mostra o cache na hora e atualiza em seguida: adicionais/preços novos cadastrados no PC
+      api.getProducts(undefined, undefined, true).then(setProducts).catch(() => {});
+    } catch (err) {
+      console.error('Erro ao carregar cardápio:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  if (!table || !table.activeOrder) return null;
+
+  // Filtrar produtos
+  const filteredProducts = products.filter((prod) => {
+    const matchCategory = selectedCategoryId === 'ALL' || prod.categoryId === selectedCategoryId;
+    const matchSearch = search.trim() === '' || prod.name.toLowerCase().includes(search.toLowerCase());
+    return matchCategory && matchSearch;
+  });
+
+  // Funções do carrinho
+  const addToCart = (product: Product, unitType: 'UNIT' | 'BOX' = 'UNIT', options: ModifierOption[] = []) => {
+    const isBox = unitType === 'BOX' && product.hasBoxPrice && product.boxPrice;
+    const finalType: 'UNIT' | 'BOX' = isBox ? 'BOX' : 'UNIT';
+    const key = cartKey(product.id, finalType, isBox ? [] : options);
+
+    setCart((prev) => {
+      if (prev.some((item) => item.key === key)) {
+        return prev.map((item) => (item.key === key ? { ...item, quantity: item.quantity + 1 } : item));
+      }
+      return [...prev, {
+        key,
+        product,
+        quantity: 1,
+        unitType: finalType,
+        options: isBox ? [] : options,
+        notes: isBox ? `Caixa Fechada (${product.boxQuantity || 24} un)` : ''
+      }];
+    });
+  };
+
+  // Produto com perguntas/adicionais abre a escolha antes de entrar no carrinho
+  const handleAddUnit = (product: Product) => {
+    if (productModifierGroups(product).length > 0) setPickerProduct(product);
+    else addToCart(product, 'UNIT');
+  };
+
+  const updateQuantity = (key: string, delta: number) => {
+    setCart((prev) =>
+      prev
+        .map((item) => {
+          if (item.key === key) {
+            const newQty = item.quantity + delta;
+            return newQty > 0 ? { ...item, quantity: newQty } : null;
+          }
+          return item;
+        })
+        .filter(Boolean) as CartItem[]
+    );
+  };
+
+  const updateNotes = (key: string, notes: string) => {
+    setCart((prev) => prev.map((item) => (item.key === key ? { ...item, notes } : item)));
+  };
+
+  const appendQuickNote = (key: string, chip: string) => {
+    setCart((prev) =>
+      prev.map((item) => {
+        if (item.key === key) {
+          const current = item.notes ? `${item.notes}, ${chip}` : chip;
+          return { ...item, notes: current };
+        }
+        return item;
+      })
+    );
+  };
+
+  const cartTotal = cart.reduce(
+    (sum, item) => sum + linePrice(item) * item.quantity,
+    0
+  );
+
+  const handleSendOrder = async () => {
+    if (cart.length === 0 || !table.activeOrder || submitting) return;
+
+    try {
+      setSubmitting(true);
+      const itemsPayload = cart.map((item) => ({
+        productId: item.product.id,
+        quantity: item.quantity,
+        unitType: item.unitType,
+        notes: item.notes.trim() || undefined,
+        modifierOptionIds: item.options.map((o) => o.id)
+      }));
+
+      await api.addOrderItems(table.activeOrder.id, itemsPayload);
+      onSuccess();
+      onClose();
+    } catch (error: any) {
+      alert(error.message || 'Erro ao enviar pedido');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const getCategoryIcon = (iconName?: string) => {
+    switch (iconName) {
+      case 'Beer': return <Beer className="w-4 h-4" />;
+      case 'Wine': return <Wine className="w-4 h-4" />;
+      case 'Flame': return <Flame className="w-4 h-4" />;
+      case 'UtensilsCrossed': return <UtensilsCrossed className="w-4 h-4" />;
+      case 'Beef': return <Beef className="w-4 h-4" />;
+      case 'GlassWater': return <GlassWater className="w-4 h-4" />;
+      default: return <Sparkles className="w-4 h-4" />;
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/80 dark:bg-black/80 backdrop-blur-sm animate-fadeIn">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-5xl h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+        {/* Cabeçalho */}
+        <div className="p-4 sm:px-6 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/90">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-blue-500/15 text-blue-700 dark:text-blue-400 border border-blue-500/30">
+                LANÇAMENTO DE PEDIDO
+              </span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                Comanda #{table.activeOrder.orderNumber}
+              </span>
+            </div>
+            <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+              {table.name || `Mesa ${table.number}`}
+              {table.customerName ? ` • ${table.customerName}` : ''}
+            </h2>
+          </div>
+
+          <button
+            onClick={onClose}
+            className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/60 dark:hover:bg-slate-800 transition cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Corpo: Grade de Produtos + Carrinho Lateral/Inferior */}
+        <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+          {/* LADO ESQUERDO: Catálogo e Busca */}
+          <div className="flex-1 flex flex-col border-r border-slate-200 dark:border-slate-800 overflow-hidden">
+            {/* Barra de Busca e Categorias */}
+            <div className="p-3 sm:p-4 space-y-3 bg-slate-50/70 dark:bg-slate-950/40 border-b border-slate-200 dark:border-slate-800">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Buscar produto (ex: chope, batata, caipirinha)..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-amber-500 text-sm"
+                />
+              </div>
+
+              {/* Categorias (scroll horizontal touch-friendly no Android) */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+                <button
+                  onClick={() => setSelectedCategoryId('ALL')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer ${
+                    selectedCategoryId === 'ALL'
+                      ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                      : 'bg-white hover:bg-slate-100 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Todos os Itens
+                </button>
+
+                {categories.map((cat) => (
+                  <button
+                    key={cat.id}
+                    onClick={() => setSelectedCategoryId(cat.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer ${
+                      selectedCategoryId === cat.id
+                        ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                        : 'bg-white hover:bg-slate-100 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    {getCategoryIcon(cat.icon)}
+                    {cat.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Grid de Produtos */}
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4">
+              {loading ? (
+                <div className="flex items-center justify-center h-48 text-slate-400">
+                  Carregando cardápio...
+                </div>
+              ) : filteredProducts.length === 0 ? (
+                <div className="flex items-center justify-center h-48 text-slate-500 text-sm">
+                  Nenhum item encontrado
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                  {filteredProducts.map((prod) => {
+                    const sumQty = (unitType: 'UNIT' | 'BOX') =>
+                      cart.filter((i) => i.product.id === prod.id && i.unitType === unitType).reduce((acc, i) => acc + i.quantity, 0);
+                    const cartUnits = sumQty('UNIT') > 0 ? { quantity: sumQty('UNIT') } : undefined;
+                    const cartBoxes = sumQty('BOX') > 0 ? { quantity: sumQty('BOX') } : undefined;
+                    const totalInCart = (cartUnits?.quantity || 0) + (cartBoxes?.quantity || 0);
+                    const promo = priceFor(prod);
+                    const hasOptions = productModifierGroups(prod).length > 0;
+
+                    return (
+                      <div
+                        key={prod.id}
+                        className={`group relative p-3 rounded-2xl border transition-all duration-150 flex flex-col justify-between select-none ${
+                          totalInCart > 0
+                            ? 'bg-amber-500/10 border-amber-500/60 ring-1 ring-amber-500/30'
+                            : 'bg-white dark:bg-slate-950/60 border-slate-200 dark:border-slate-800/90 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 shadow-xs'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-start justify-between gap-1 mb-1">
+                            <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                              {prod.kdsStation === 'BAR' ? '🍺 Bar' : '🍳 Cozinha'}
+                            </span>
+                            {totalInCart > 0 && (
+                              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-500 text-slate-950">
+                                {totalInCart}x
+                              </span>
+                            )}
+                          </div>
+                          <h4 className="text-sm font-bold text-slate-900 dark:text-white line-clamp-2 leading-snug">
+                            {prod.name}
+                          </h4>
+                          {promo.promotion && (
+                            <span className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-700 dark:text-rose-300 text-[10px] font-black border border-rose-500/30">
+                              <Tag className="w-2.5 h-2.5" /> {promo.promotion.name}
+                            </span>
+                          )}
+                          {hasOptions && (
+                            <span className="block text-[10px] font-bold text-blue-600 dark:text-blue-400 mt-0.5">Com opções / adicionais</span>
+                          )}
+                          {prod.description && (
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1 mt-0.5">
+                              {prod.description}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Seletor Visual: Unidade vs Caixa */}
+                        {prod.hasBoxPrice && prod.boxPrice ? (
+                          <div className="mt-3 pt-2 border-t border-slate-200 dark:border-slate-800/60 space-y-1.5">
+                            <div className="grid grid-cols-2 gap-1">
+                              {/* Botão Unidade Avulsa */}
+                              <button
+                                type="button"
+                                onClick={() => handleAddUnit(prod)}
+                                className="px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-900 hover:bg-amber-500 hover:text-slate-950 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-amber-400 transition flex flex-col items-center justify-center cursor-pointer group/u active:scale-95"
+                                title="Adicionar 1 Unidade"
+                              >
+                                <span className="text-[9px] uppercase font-bold text-slate-500 dark:text-slate-400 group-hover/u:text-slate-900">
+                                  Unidade
+                                </span>
+                                <span className="text-xs font-black font-mono text-emerald-600 dark:text-emerald-400 group-hover/u:text-slate-950">
+                                  R$ {promo.price.toFixed(2)}
+                                </span>
+                                {cartUnits && (
+                                  <span className="text-[9px] font-bold text-amber-600 dark:text-amber-400 group-hover/u:text-slate-950">
+                                    ({cartUnits.quantity}x)
+                                  </span>
+                                )}
+                              </button>
+
+                              {/* Botão Caixa Fechada */}
+                              <button
+                                type="button"
+                                onClick={() => addToCart(prod, 'BOX')}
+                                className="px-2 py-1.5 rounded-xl bg-amber-500/10 dark:bg-amber-500/15 hover:bg-amber-500 hover:text-slate-950 text-amber-700 dark:text-amber-300 border border-amber-500/30 hover:border-amber-400 transition flex flex-col items-center justify-center cursor-pointer group/cx active:scale-95"
+                                title={`Adicionar Caixa com ${prod.boxQuantity || 24} unidades`}
+                              >
+                                <span className="text-[9px] uppercase font-black tracking-wider flex items-center gap-0.5 group-hover/cx:text-slate-950">
+                                  <Package className="w-2.5 h-2.5" /> Cx {prod.boxQuantity || 24}x
+                                </span>
+                                <span className="text-xs font-black font-mono text-slate-900 dark:text-white group-hover/cx:text-slate-950">
+                                  R$ {Number(prod.boxPrice).toFixed(2)}
+                                </span>
+                                {cartBoxes && (
+                                  <span className="text-[9px] font-black text-amber-600 dark:text-amber-400 group-hover/cx:text-slate-950">
+                                    ({cartBoxes.quantity} cx)
+                                  </span>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800/60">
+                            <span className="text-sm font-extrabold text-amber-600 dark:text-amber-400">
+                              {promo.promotion && (
+                                <span className="block text-[10px] font-bold text-slate-400 line-through">R$ {prod.price.toFixed(2)}</span>
+                              )}
+                              R$ {promo.price.toFixed(2)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleAddUnit(prod)}
+                              className="p-1 rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-500 hover:text-slate-950 group-hover:bg-amber-500 group-hover:text-slate-950 transition cursor-pointer"
+                            >
+                              <Plus className="w-4 h-4 stroke-[2.5]" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* LADO DIREITO: Carrinho de Envio ao KDS */}
+          <div className="w-full md:w-80 lg:w-96 bg-slate-50 dark:bg-slate-950/80 flex flex-col border-t md:border-t-0 md:border-l border-slate-200 dark:border-slate-800">
+            <div className="p-3 sm:p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-slate-200">
+                  Itens a Enviar
+                </h3>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  {cart.length} produto(s) selecionado(s)
+                </span>
+              </div>
+              {cart.length > 0 && (
+                <button
+                  onClick={() => setCart([])}
+                  className="text-xs text-red-500 hover:text-red-400 font-medium flex items-center gap-1"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Limpar
+                </button>
+              )}
+            </div>
+
+            {/* Lista dos Itens no Carrinho */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+              {cart.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400 dark:text-slate-500">
+                  <Beer className="w-10 h-10 stroke-[1.5] text-slate-300 dark:text-slate-600 mb-2" />
+                  <p className="text-sm font-medium text-slate-600 dark:text-slate-400">Nenhum item selecionado</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-600 mt-1">
+                    Toque nos produtos ao lado para adicionar à rodada.
+                  </p>
+                </div>
+              ) : (
+                cart.map((item) => (
+                  <div
+                    key={item.key}
+                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 space-y-2 shadow-xs"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-bold text-slate-900 dark:text-white block">
+                            {item.product.name}
+                          </span>
+                          {item.unitType === 'BOX' ? (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-black border border-amber-500/30 flex items-center gap-1">
+                              <Package className="w-2.5 h-2.5" /> Cx {item.product.boxQuantity || 24}x
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 text-[9px] font-bold border border-slate-200 dark:border-slate-700">
+                              Un
+                            </span>
+                          )}
+                        </div>
+                        {item.options.length > 0 && (
+                          <span className="block text-[10px] text-blue-700 dark:text-blue-300 font-semibold">
+                            {item.options.map((o) => o.name).join(' · ')}
+                          </span>
+                        )}
+                        {item.unitType === 'UNIT' && priceFor(item.product).promotion && (
+                          <span className="block text-[10px] text-rose-600 dark:text-rose-300 font-bold">{priceFor(item.product).promotion?.name}</span>
+                        )}
+                        <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+                          R$ {(linePrice(item) * item.quantity).toFixed(2)}
+                        </span>
+                      </div>
+
+                      {/* Controle de Quantidade */}
+                      <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 rounded-xl p-0.5 border border-slate-200 dark:border-slate-800">
+                        <button
+                          onClick={() => updateQuantity(item.key, -1)}
+                          className="p-1.5 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 transition"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="font-bold text-sm text-slate-900 dark:text-white px-2 font-mono">
+                          {item.quantity}
+                        </span>
+                        <button
+                          onClick={() => updateQuantity(item.key, 1)}
+                          className="p-1.5 text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 transition"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Campo de Observação do Item */}
+                    <div>
+                      <input
+                        type="text"
+                        placeholder="Observação (ex: sem gelo, bem passada)..."
+                        value={item.notes}
+                        onChange={(e) => updateNotes(item.key, e.target.value)}
+                        className="w-full text-xs px-2.5 py-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-lg text-slate-900 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-amber-500"
+                      />
+
+                      {/* Chips rápidos de observação */}
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {quickObservationChips.slice(0, 4).map((chip) => (
+                          <button
+                            key={chip}
+                            type="button"
+                            onClick={() => appendQuickNote(item.key, chip)}
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/60 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition border border-slate-200 dark:border-transparent"
+                          >
+                            + {chip}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Rodapé com Total e Botão de Envio para Bar/Cozinha */}
+            <div className="p-3 sm:p-4 bg-slate-100/80 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-bold">
+                  Total desta Rodada
+                </span>
+                <span className="text-xl font-black text-amber-600 dark:text-amber-400">
+                  R$ {cartTotal.toFixed(2)}
+                </span>
+              </div>
+
+              <button
+                disabled={cart.length === 0 || submitting}
+                onClick={handleSendOrder}
+                className="w-full py-3.5 px-4 rounded-xl font-black text-sm uppercase tracking-wide bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 transition shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
+              >
+                <Send className="w-4 h-4" />
+                <span>{submitting ? 'Enviando...' : 'Enviar para Bar / Cozinha'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {pickerProduct && (
+        <ModifierPickerModal
+          product={pickerProduct}
+          basePrice={priceFor(pickerProduct).price}
+          onClose={() => setPickerProduct(null)}
+          onConfirm={(options) => {
+            addToCart(pickerProduct, 'UNIT', options);
+            setPickerProduct(null);
+          }}
+        />
+      )}
+    </div>
+  );
+};

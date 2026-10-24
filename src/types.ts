@@ -1,0 +1,354 @@
+export type TableStatus = 'AVAILABLE' | 'OCCUPIED' | 'CLOSING' | 'RESERVED';
+export type OrderStatus = 'OPEN' | 'PAID' | 'CANCELLED' | 'CLOSED';
+export type KdsStatus = 'PENDING' | 'PREPARING' | 'READY' | 'DELIVERED';
+export type KdsStation = 'BAR' | 'KITCHEN' | 'NONE';
+export type PaymentMethod = 'CASH' | 'CREDIT_CARD' | 'DEBIT_CARD' | 'PIX' | 'VOUCHER' | 'CREDIT_TAB';
+
+export interface Category {
+  id: string;
+  name: string;
+  icon?: string;
+  sortOrder: number;
+  codeStart?: number | null;
+  _count?: { products: number };
+}
+
+export interface ProductComponent {
+  id?: string;
+  parentProductId?: string;
+  componentId: string;
+  component?: Product;
+  quantity: number;
+  paidQuantity?: number;
+
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  tradeName?: string | null;
+  document?: string | null;
+  ie?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  city?: string | null;
+  state?: string | null;
+  address?: string | null;
+  contactName?: string | null;
+  notes?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  _count?: { products: number };
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  code?: string | null;
+  ean?: string | null;
+  supplier?: string | null;
+  supplierId?: string | null;
+  supplierRel?: Supplier;
+  brand?: string | null;
+  description?: string | null;
+  price: number;
+  costPrice?: number | null;
+  targetMargin?: number | null;
+  categoryId: string;
+  ncm?: string | null;
+  cfop?: string | null;
+  cest?: string | null;
+  category?: Category;
+  kdsStation: KdsStation;
+  stock: number;
+  trackStock: boolean;
+  minStock: number;
+  unit: string;
+  isActive: boolean;
+  components?: ProductComponent[];
+
+  // Venda por Caixa / Fardo Fechado
+  hasBoxPrice?: boolean;
+  boxQuantity?: number | null;
+  boxPrice?: number | null;
+  boxCostPrice?: number | null;
+  boxEan?: string | null;
+
+  // Adicionais / perguntas exibidos ao lançar o produto
+  modifierGroups?: { groupId: string; sortOrder: number; group: ModifierGroup }[];
+
+  // Cardápio digital
+  showInMenu?: boolean;
+  imageHash?: string | null; // foto em /products/:id/image?v=<hash>
+}
+
+export interface ModifierOption {
+  id: string;
+  groupId: string;
+  name: string;
+  price: number;
+  sortOrder: number;
+  isActive: boolean;
+}
+
+export interface ModifierGroup {
+  id: string;
+  name: string;
+  minSelect: number; // >= 1 = pergunta obrigatória
+  maxSelect: number; // 0 = sem limite
+  sortOrder: number;
+  isActive: boolean;
+  options: ModifierOption[];
+  _count?: { products: number };
+}
+
+// Opção escolhida, gravada no item do pedido (OrderItem.modifiers em JSON)
+export interface ModifierSnapshot {
+  group: string;
+  name: string;
+  price: number;
+}
+
+export interface Promotion {
+  id: string;
+  name: string;
+  isActive: boolean;
+  daysOfWeek: string; // "0,1,...,6" (0 = domingo)
+  startTime: string; // HH:MM
+  endTime: string; // HH:MM
+  discountType: 'PERCENT' | 'FIXED_PRICE';
+  value: number;
+  productIds: string; // JSON
+  categoryIds: string; // JSON
+  isRunningNow?: boolean;
+}
+
+export interface PriceHistory {
+  id: string;
+  productId: string;
+  oldCostPrice?: number | null;
+  newCostPrice?: number | null;
+  oldPrice: number;
+  newPrice: number;
+  costDiff?: number | null;
+  costPercent?: number | null;
+  priceDiff: number;
+  pricePercent: number;
+  changedBy: string;
+  reason: string;
+  nfeChave?: string | null;
+  createdAt: string;
+}
+
+export interface OrderItem {
+  id: string;
+  orderId: string;
+  productId: string;
+  product: Product;
+  quantity: number;
+  paidQuantity?: number;
+  unitPrice: number;
+  totalPrice: number;
+  unitType?: 'UNIT' | 'BOX';
+  notes?: string | null;
+  modifiers?: string | null; // JSON de ModifierSnapshot[]
+  basePrice?: number | null; // Preço de tabela antes da promoção do dia
+  promotionName?: string | null;
+  kdsStatus: KdsStatus;
+  kdsStation: KdsStation;
+  addedAt: string;
+}
+
+export interface KdsItem extends OrderItem {
+  order: {
+    id: string;
+    orderNumber: number;
+    tableId?: string | null;
+    waiterName?: string | null;
+    table?: {
+      id: string;
+      number: number;
+      name?: string | null;
+      section: string;
+    } | null;
+  };
+}
+
+export interface Payment {
+  id: string;
+  orderId: string;
+  amount: number;
+  method: PaymentMethod;
+  notes?: string | null;
+  receivedAt: string;
+}
+
+export interface Waiter {
+  id: string;
+  name: string;
+  code?: string | null;
+  commissionRate: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Order {
+  id: string;
+  orderNumber: number;
+  tableId?: string | null;
+  table?: Table | null;
+  status: OrderStatus;
+  customerName?: string | null;
+  waiterId?: string | null;
+  waiterName?: string | null;
+  subtotal: number;
+  serviceFeeRate: number;
+  serviceFee: number;
+  discount: number;
+  total: number;
+  paidAmount: number;
+  isServiceFeeActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string | null;
+  items: OrderItem[];
+  payments: Payment[];
+}
+
+export interface Table {
+  id: string;
+  number: number;
+  name?: string | null;
+  capacity: number;
+  status: TableStatus;
+  section: string;
+  currentOrderId?: string | null;
+  customerCount: number;
+  customerName?: string | null;
+  openedAt?: string | null;
+  mergedIntoTableId?: string | null;
+  activeOrder?: Order | null;
+}
+
+export interface CashTransaction {
+  id: string;
+  cashShiftId: string;
+  type: 'SUPPLY' | 'WITHDRAWAL';
+  amount: number;
+  reason: string;
+  createdAt: string;
+}
+
+export interface CashShift {
+  id: string;
+  openedAt: string;
+  closedAt?: string | null;
+  openedBy: string;
+  closedBy?: string | null;
+  initialBalance: number;
+  finalBalance?: number | null;
+  expectedBalance?: number | null;
+  difference?: number | null;
+  status: 'OPEN' | 'CLOSED';
+  notes?: string | null;
+  transactions: CashTransaction[];
+  payments: (Payment & { order?: { table?: { number: number; name?: string } } })[];
+}
+
+export interface WaiterCommissionSummary {
+  waiterId: string | null;
+  waiterName: string;
+  ordersCount: number;
+  totalSales: number;
+  serviceFeeTotal: number;
+}
+
+export interface CashSummary {
+  initialBalance: number;
+  totalSupplies: number;
+  totalWithdrawals: number;
+  totalSales: number;
+  paymentsByMethod: Record<PaymentMethod, number>;
+  expectedCashInDrawer: number;
+  totalServiceFeesShift?: number;
+  waiterCommissions?: WaiterCommissionSummary[];
+}
+
+export interface DashboardData {
+  todayRevenue: number;
+  ordersCompletedToday: number;
+  occupiedTables: number;
+  totalTables: number;
+  occupancyRate: number;
+  averageTicket: number;
+  topProducts: { name: string; quantity: number; total: number; station: string }[];
+  paidQuantity?: number;
+
+  paymentMethodsBreakdown: Record<string, number>;
+  salesByHour: { hour: string; total: number }[];
+  waiterPerformance: { name: string; total: number; count: number }[];
+  lowMarginProducts: { id: string; name: string; margin: number; price: number; cost: number }[];
+
+}
+
+export interface StaffPublicUser {
+  id: string;
+  name: string;
+  role: string;
+}
+
+export interface StaffMember {
+  id: string;
+  name: string;
+  role: string;
+  permissions: string[];
+  active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface LoggedUser {
+  id: string;
+  name: string;
+  role: string;
+  permissions: string[];
+}
+
+export interface PrinterSettings {
+  id?: string;
+  cashierPrinter: string;
+  kitchenPrinter: string;
+  paperWidth: number; // 80 ou 58
+  marginTop: number;
+  marginBottom: number;
+  marginLeft: number;
+  marginRight: number;
+  fontScale: number; // 80, 90, 100, 110
+  qrSize: number; // 140, 170, 200
+  autoCut: boolean;
+  silentPrint: boolean;
+  copies: number;
+  extraFeedLines: number;
+  printLogo: boolean;
+  updatedAt?: string;
+}
+
+
+// Cardápio digital por QR na mesa (GET /system/digital-menu)
+export interface DigitalMenuStatus {
+  enabled: boolean;
+  siteUrl: string;
+  customSiteUrl: string;
+  storeId: string | null;
+  menuUrl: string | null;
+  title: string;
+  defaultTitle: string;
+  message: string;
+  hiddenCategoryIds: string[];
+  hideSoldOut: boolean;
+  ignoreStock: boolean;
+  lastPublishedAt: string | null;
+  lastError: string | null;
+  publishing: boolean;
+}

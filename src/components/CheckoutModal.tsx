@@ -1,0 +1,716 @@
+import React, { useState } from 'react';
+import { Table, Order, PaymentMethod, OrderItem } from '../types';
+import { api } from '../services/api';
+import { printOrderReceipt, printButtonLabel } from '../services/printService';
+import { PAYMENT_LABELS } from './ThermalReceipt';
+import { modifiersLabel } from '../utils/pricing';
+import {
+  X,
+  Printer,
+  Share2,
+  CheckCircle,
+  CreditCard,
+  Banknote,
+  QrCode,
+  Tag, BookDown,
+  Percent,
+  Users, ListChecks, Plus, Minus,
+  AlertCircle, HandCoins
+} from 'lucide-react';
+
+interface CheckoutModalProps {
+  table: Table | null;
+  onClose: () => void;
+  onSuccess: () => void;
+  isManager?: boolean;
+}
+
+export const CheckoutModal: React.FC<CheckoutModalProps> = ({
+  table,
+  onClose,
+  onSuccess,
+  isManager = true
+}) => {
+  const [currentOrder, setCurrentOrder] = useState<Order | null>(table?.activeOrder || null);
+  const order = currentOrder;
+  const remainingBalance = Math.max(0, (order?.total || 0) - (order?.paidAmount || 0));
+
+  // Estados de divisão
+  // 'amount' = Abater Valor (haver): o cliente paga só parte da conta, sem escolher itens
+
+  // Estados de Divisão por Itens
+  const [splitMode, setSplitMode] = useState<'simple' | 'items' | 'amount'>('simple');
+  const payAmountInputRef = React.useRef<HTMLInputElement>(null);
+  const [selectedItems, setSelectedItems] = useState<Record<string, number>>({});
+  const [splitCount, setSplitCount] = useState<number>(table?.customerCount || 2);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
+  const [payAmount, setPayAmount] = useState<string>(remainingBalance.toFixed(2));
+  const [cashTendered, setCashTendered] = useState<string>('');
+  const [discountValue, setDiscountValue] = useState<string>('');
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [paymentSuccess, setPaymentSuccess] = useState<boolean>(false);
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [customerId, setCustomerId] = useState<string>('');
+  const [customerNameInput, setCustomerNameInput] = useState<string>('');
+
+  React.useEffect(() => {
+    if (table?.activeOrder) {
+      setCurrentOrder(table.activeOrder);
+      const remaining = Math.max(0, (table.activeOrder.total || 0) - (table.activeOrder.paidAmount || 0));
+      setPayAmount(remaining.toFixed(2));
+    }
+  }, [table?.activeOrder]);
+
+  React.useEffect(() => {
+    if (isManager) {
+      api.getCustomers().then(setCustomers).catch(() => {});
+    }
+  }, [isManager]);
+
+  // Itens que ainda não foram totalmente pagos
+  const unpaidItems = React.useMemo(() => {
+    if (!order) return [];
+    return order.items.map(item => ({
+      ...item,
+      unpaidQty: item.quantity - (item.paidQuantity || 0)
+    })).filter(i => i.unpaidQty > 0);
+  }, [order?.items]);
+
+  // Lógica de "Racha Conta por Itens"
+  const selectedItemsSubtotal = Object.entries(selectedItems).reduce((acc, [itemId, qty]) => {
+    if (!order) return acc;
+    const item = order.items.find(i => i.id === itemId);
+    if (!item) return acc;
+    return acc + (item.unitPrice * qty);
+  }, 0);
+  const selectedItemsService = order?.isServiceFeeActive ? selectedItemsSubtotal * (order.serviceFeeRate || 0.1) : 0;
+  const selectedItemsTotal = selectedItemsSubtotal + selectedItemsService;
+
+  // Atualizar payAmount quando trocar os itens selecionados
+  React.useEffect(() => {
+    if (splitMode === 'items') {
+      // Com desconto na conta, a soma dos itens pode passar do saldo restante
+      setPayAmount(Math.min(selectedItemsTotal, remainingBalance).toFixed(2));
+    }
+  }, [selectedItemsTotal, splitMode, remainingBalance]);
+
+  const handleSelectAmountMode = () => {
+    setSplitMode('amount');
+    setPayAmount('');
+    setTimeout(() => payAmountInputRef.current?.focus(), 50);
+  };
+
+  if (!table || !order) return null;
+
+  const handleToggleItemQty = (item: OrderItem & { unpaidQty?: number }, delta: number) => {
+    setSelectedItems(prev => {
+      const current = prev[item.id] || 0;
+      const maxAllowed = item.unpaidQty !== undefined ? item.unpaidQty : item.quantity;
+      const next = Math.max(0, Math.min(maxAllowed, current + delta));
+      if (next === 0) {
+        const copy = { ...prev };
+        delete copy[item.id];
+        return copy;
+      }
+      return { ...prev, [item.id]: next };
+    });
+  };
+
+  const amountPerPerson = remainingBalance / Math.max(1, splitCount);
+
+  // Troco em dinheiro
+  const cashGiven = parseFloat(cashTendered) || 0;
+  const toPayNum = parseFloat(payAmount) || 0;
+  const change = Math.max(0, cashGiven - toPayNum);
+
+  // Alternar taxa de serviço 10%
+  const handleToggleService = async () => {
+    if (!order) return;
+    try {
+      const updated = await api.toggleServiceFee(order.id, !order.isServiceFeeActive);
+      setCurrentOrder(updated);
+      const rem = Math.max(0, (updated.total || 0) - (updated.paidAmount || 0));
+      setPayAmount(rem.toFixed(2));
+      onSuccess();
+    } catch (err: any) {
+      alert(err.message || 'Erro ao alterar taxa de serviço');
+    }
+  };
+
+  // Aplicar desconto
+  const handleApplyDiscount = async () => {
+    if (!order) return;
+    const val = parseFloat(discountValue.replace(',', '.')) || 0;
+    try {
+      const updated = await api.applyDiscount(order.id, val);
+      setCurrentOrder(updated);
+      const rem = Math.max(0, (updated.total || 0) - (updated.paidAmount || 0));
+      setPayAmount(rem.toFixed(2));
+      onSuccess();
+    } catch (err: any) {
+      alert(err.message || 'Erro ao aplicar desconto');
+    }
+  };
+
+  // Imprimir conferência (80mm/58mm)
+  const handlePrint = () => {
+    printOrderReceipt(currentOrder);
+  };
+
+  // Compartilhar conta no WhatsApp
+  const handleShareWhatsApp = () => {
+    let msg = `*CONFERÊNCIA DE MESA - ${table.name || `Mesa ${table.number}`}*\n`;
+    msg += `Comanda #${order.orderNumber}\n`;
+    msg += `--------------------------------\n`;
+    order.items.forEach((it) => {
+      msg += `${it.quantity}x ${it.product.name} - R$ ${it.totalPrice.toFixed(2)}\n`;
+    });
+    msg += `--------------------------------\n`;
+    msg += `Subtotal: R$ ${order.subtotal.toFixed(2)}\n`;
+    if (order.isServiceFeeActive) {
+      msg += `Taxa Serviço (10%): R$ ${order.serviceFee.toFixed(2)}\n`;
+    }
+    if (order.discount > 0) {
+      msg += `Desconto: - R$ ${order.discount.toFixed(2)}\n`;
+    }
+    msg += `*TOTAL: R$ ${order.total.toFixed(2)}*\n`;
+    if (splitCount > 1) {
+      msg += `Divisão (${splitCount} pessoas): R$ ${(order.total / splitCount).toFixed(2)} cada\n`;
+    }
+    msg += `\nObrigado pela preferência!`;
+
+    const encoded = encodeURIComponent(msg);
+    window.open(`https://api.whatsapp.com/send?text=${encoded}`, '_blank');
+  };
+
+  // Executar Pagamento
+  const handleExecutePayment = async (closeOrderImmediately: boolean) => {
+    const amt = parseFloat(payAmount);
+    if (isNaN(amt) || amt <= 0) {
+      alert('Informe um valor válido para pagamento');
+      return;
+    }
+    if (amt > remainingBalance + 0.05) {
+      alert(`O valor informado é maior que o saldo restante (R$ ${remainingBalance.toFixed(2)}).`);
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      let finalCustomerId = customerId;
+      if (paymentMethod === 'CREDIT_TAB') {
+        if (!finalCustomerId && customerNameInput.trim()) {
+          const newCust = await api.createCustomer({ name: customerNameInput.trim() });
+          finalCustomerId = newCust.id;
+        }
+      }
+      const isClosing = closeOrderImmediately || amt >= remainingBalance - 0.05;
+
+      await api.payOrder(order.id, {
+        payments: [
+          {
+            amount: amt,
+            method: paymentMethod,
+            notes: splitMode === 'items'
+              ? 'Itens: ' + Object.entries(selectedItems).filter(([_, q]) => q > 0).map(([id, q]) => `${q}x ${order.items.find(i => i.id === id)?.product?.name}`).join(', ')
+              : splitMode === 'amount'
+                ? (isClosing ? 'Haver (quitação)' : 'Haver (abatimento parcial)')
+                : (splitCount > 1 ? `Divisão (${splitCount}p)` : undefined)
+          }
+        ],
+        closeOrder: isClosing,
+        customerId: finalCustomerId || undefined,
+        paidItems: splitMode === 'items' ? Object.entries(selectedItems).filter(([_, q]) => q > 0).map(([id, q]) => ({ itemId: id, quantity: q })) : undefined
+      });
+
+      setPaymentSuccess(true);
+      setTimeout(() => {
+        onSuccess();
+        onClose();
+      }, 1200);
+    } catch (err: any) {
+      alert(err.message || 'Erro ao processar pagamento');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const paymentOptions: { method: PaymentMethod; label: string; icon: any }[] = [
+    { method: 'PIX', label: 'PIX Instantâneo', icon: QrCode },
+    { method: 'CREDIT_CARD', label: 'Cartão Crédito', icon: CreditCard },
+    { method: 'DEBIT_CARD', label: 'Cartão Débito', icon: CreditCard },
+    { method: 'CASH', label: 'Dinheiro', icon: Banknote },
+    { method: 'VOUCHER', label: 'Voucher / Vale', icon: Tag }
+  ];
+
+  if (isManager) {
+    paymentOptions.push({ method: 'CREDIT_TAB', label: 'Conta Fiado (Prazo)', icon: BookDown });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 dark:bg-black/85 backdrop-blur-sm animate-fadeIn">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-2xl max-h-[95vh] flex flex-col shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="p-4 sm:px-6 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/90">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30">
+                FECHAMENTO & PDV
+              </span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                Comanda #{order.orderNumber}
+              </span>
+            </div>
+            <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+              {table.name || `Mesa ${table.number}`}
+              {table.customerName ? ` • ${table.customerName}` : ''}
+            </h2>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handlePrint}
+              className="p-2 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition flex items-center gap-1.5 text-xs font-bold cursor-pointer"
+              title={printButtonLabel()}
+            >
+              <Printer className="w-4 h-4" />
+              <span className="hidden sm:inline">{printButtonLabel()}</span>
+            </button>
+
+            <button
+              onClick={handleShareWhatsApp}
+              className="p-2 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 rounded-xl bg-emerald-500/10 dark:bg-emerald-950/40 hover:bg-emerald-500/20 dark:hover:bg-emerald-900/40 border border-emerald-500/30 dark:border-emerald-800/40 transition flex items-center gap-1.5 text-xs font-bold cursor-pointer"
+              title="Compartilhar no WhatsApp"
+            >
+              <Share2 className="w-4 h-4" />
+              <span className="hidden sm:inline">WhatsApp</span>
+            </button>
+
+            <button
+              onClick={onClose}
+              className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/60 dark:hover:bg-slate-800 transition cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Conteúdo */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+          {/* Card Resumo Financeiro */}
+          <div className="bg-slate-50 dark:bg-slate-950/70 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+            <div className="flex items-center justify-between text-sm text-slate-700 dark:text-slate-300">
+              <span>Subtotal ({order.items.length} itens):</span>
+              <span className="font-mono font-bold text-slate-900 dark:text-white">R$ {order.subtotal.toFixed(2)}</span>
+            </div>
+
+            {/* Taxa de Serviço 10% com Toggle */}
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleToggleService}
+                  className={`w-9 h-5 rounded-full transition-colors relative cursor-pointer active:scale-95 ${
+                    order.isServiceFeeActive ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'
+                  }`}
+                >
+                  <span
+                    className={`block w-3.5 h-3.5 rounded-full bg-white dark:bg-slate-950 transition-transform ${
+                      order.isServiceFeeActive ? 'translate-x-4' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+                <span className="text-slate-700 dark:text-slate-300">Taxa de Serviço (10% Garçom):</span>
+              </div>
+              <span className="font-mono font-bold text-amber-600 dark:text-amber-400">
+                {order.isServiceFeeActive ? `R$ ${order.serviceFee.toFixed(2)}` : 'R$ 0.00'}
+              </span>
+            </div>
+
+            {/* Desconto */}
+            {isManager && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-700 dark:text-slate-300">Desconto:</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0,00"
+                    value={discountValue}
+                    onChange={(e) => setDiscountValue(e.target.value.replace(',', '.'))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleApplyDiscount(); }}
+                    onFocus={(e) => e.target.select()}
+                    className="w-20 px-2 py-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg text-xs text-right font-mono text-slate-900 dark:text-white focus:border-amber-500 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApplyDiscount}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-400 border border-amber-500/30 text-[11px] font-bold cursor-pointer active:scale-95 transition"
+                  >
+                    Aplicar
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-bold block">
+                  Total da Conta
+                </span>
+                <span className="text-2xl font-black text-slate-900 dark:text-white">
+                  R$ {order.total.toFixed(2)}
+                </span>
+              </div>
+
+              <div className="text-right">
+                <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-bold block">
+                  Saldo Restante a Pagar
+                </span>
+                <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+                  R$ {remainingBalance.toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            {/* Valores já abatidos (haver) nesta comanda */}
+            {(order.paidAmount || 0) > 0 && (
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-1">
+                <div className="flex items-center justify-between text-xs font-bold text-blue-700 dark:text-blue-400">
+                  <span className="uppercase tracking-wider">Já Abatido (Haver)</span>
+                  <span className="font-mono">- R$ {order.paidAmount.toFixed(2)}</span>
+                </div>
+                {order.payments?.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                    <span className="truncate">
+                      {new Date(p.receivedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                      {' · '}{PAYMENT_LABELS[p.method] || p.method}
+                      {p.notes ? ` · ${p.notes}` : ''}
+                    </span>
+                    <span className="font-mono shrink-0">R$ {p.amount.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Seção de Divisão de Conta (Racha-Conta) */}
+          <div className="bg-slate-50/80 dark:bg-slate-900/90 rounded-2xl border border-slate-200 dark:border-slate-800/80 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="text-xs font-bold uppercase text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                <Users className="w-4 h-4 text-amber-500 dark:text-amber-400" />
+                Racha-Conta
+              </label>
+              
+              <div className="flex bg-slate-200/80 dark:bg-slate-950 rounded-lg p-0.5 border border-slate-300 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (splitMode === 'amount') setPayAmount(remainingBalance.toFixed(2));
+                    setSplitMode('simple');
+                  }}
+                  className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase transition cursor-pointer ${splitMode === 'simple' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  Divisão Igual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSplitMode('items')}
+                  className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase transition flex items-center gap-1 cursor-pointer ${splitMode === 'items' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  <ListChecks className="w-3 h-3" />
+                  Por Itens
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSelectAmountMode}
+                  className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase transition flex items-center gap-1 cursor-pointer ${splitMode === 'amount' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  <HandCoins className="w-3 h-3" />
+                  Abater Valor
+                </button>
+              </div>
+            </div>
+
+            {splitMode === 'amount' ? (
+              <div className="animate-in fade-in slide-in-from-top-2 duration-200 mt-2 space-y-2">
+                <p className="text-xs text-slate-600 dark:text-slate-400">
+                  O cliente paga só uma parte da conta (haver). Digite o valor em <strong>Valor deste Pagamento</strong> ou use um atalho:
+                </p>
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                  {[10, 20, 50, 100].filter((v) => v < remainingBalance).map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setPayAmount(v.toFixed(2))}
+                      className={`flex-1 min-w-[64px] py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                        toPayNum === v
+                          ? 'bg-amber-500 text-slate-950 font-black shadow'
+                          : 'bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      R$ {v}
+                    </button>
+                  ))}
+                </div>
+                {toPayNum > 0 && toPayNum <= remainingBalance + 0.05 && (
+                  <div className="text-right text-xs font-bold text-amber-600 dark:text-amber-400 font-mono">
+                    Abatendo R$ {toPayNum.toFixed(2)} → restará R$ {Math.max(0, remainingBalance - toPayNum).toFixed(2)}
+                  </div>
+                )}
+              </div>
+            ) : splitMode === 'simple' ? (
+              <div className="animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 mt-2">
+                  {[1, 2, 3, 4, 5, 6, 8].map((num) => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => {
+                        setSplitCount(num);
+                        setPayAmount((remainingBalance / num).toFixed(2));
+                      }}
+                      className={`flex-1 min-w-[54px] py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                        splitCount === num
+                          ? 'bg-amber-500 text-slate-950 font-black shadow'
+                          : 'bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      {num}x
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-2 text-right">
+                  <span className="text-xs font-bold text-amber-600 dark:text-amber-400 font-mono">
+                    R$ {amountPerPerson.toFixed(2)} por pessoa
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="animate-in fade-in slide-in-from-top-2 duration-200 mt-3 space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                {unpaidItems.map(item => {
+                  const selectedQty = selectedItems[item.id] || 0;
+                  const isSelected = selectedQty > 0;
+                  return (
+                    <div key={item.id} className={`flex items-center justify-between p-2.5 rounded-xl border transition ${isSelected ? 'bg-amber-500/10 border-amber-500/30' : 'bg-white dark:bg-slate-950/50 border-slate-200 dark:border-slate-800'}`}>
+                      <div className="flex-1 min-w-0 pr-2">
+                        <div className="flex items-baseline gap-2">
+                          <span className={`text-sm font-bold truncate ${isSelected ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-300'}`}>
+                            {item.product?.name || 'Item'}
+                          </span>
+                        </div>
+                        {item.modifiers && (
+                          <span className="block text-[10px] text-blue-700 dark:text-blue-300 font-semibold truncate">{modifiersLabel(item.modifiers)}</span>
+                        )}
+                        <span className="text-[10px] text-slate-500">
+                          {item.unpaidQty}x R$ {item.unitPrice.toFixed(2)}
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center gap-3 bg-slate-100 dark:bg-slate-900 rounded-lg p-1 border border-slate-200 dark:border-slate-700">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleItemQty(item, -1)}
+                          className="w-7 h-7 flex items-center justify-center rounded-md bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
+                        >
+                          <Minus className="w-3 h-3" />
+                        </button>
+                        <span className={`w-4 text-center text-xs font-bold ${isSelected ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-400'}`}>
+                          {selectedQty}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleItemQty(item, 1)}
+                          className="w-7 h-7 flex items-center justify-center rounded-md bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                
+                {selectedItemsSubtotal > 0 && (
+                  <div className="pt-2 flex items-center justify-between px-1">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">
+                      Subtotal Selecionado {order.isServiceFeeActive ? '+ 10%' : ''}
+                    </span>
+                    <span className="text-sm font-black text-amber-600 dark:text-amber-400 font-mono">
+                      R$ {selectedItemsTotal.toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Formas de Pagamento */}
+          <div>
+            <label className="block text-xs font-bold uppercase text-slate-500 dark:text-slate-400 mb-2">
+              Selecione o Meio de Pagamento
+            </label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {paymentOptions.map((opt) => {
+                const Icon = opt.icon;
+                const isSelected = paymentMethod === opt.method;
+                return (
+                  <button
+                    key={opt.method}
+                    type="button"
+                    onClick={() => setPaymentMethod(opt.method)}
+                    className={`flex items-center gap-2 p-3 rounded-2xl border text-xs font-bold transition select-none cursor-pointer ${
+                      isSelected
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-700 dark:text-amber-300 ring-1 ring-amber-500'
+                        : 'bg-white dark:bg-slate-950/60 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 text-amber-500 dark:text-amber-400" />
+                    <span>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {paymentMethod === 'CREDIT_TAB' && (
+            <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                Vincular Cliente (Obrigatório / Recomendado)
+              </label>
+              <div className="flex flex-col gap-3">
+                <select
+                  value={customerId}
+                  onChange={(e) => { setCustomerId(e.target.value); setCustomerNameInput(''); }}
+                  className="bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
+                >
+                  <option value="">-- Selecione um cliente existente --</option>
+                  {customers.map((c: any) => (
+                    <option key={c.id} value={c.id}>{c.name} (Saldo Atual: R$ {c.creditTabBalance.toFixed(2)})</option>
+                  ))}
+                </select>
+                {!customerId && (
+                  <input
+                    type="text"
+                    value={customerNameInput}
+                    onChange={(e) => setCustomerNameInput(e.target.value)}
+                    placeholder="Ou digite o nome de um novo cliente..."
+                    className="bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-amber-500 w-full placeholder-slate-400 dark:placeholder-slate-600"
+                  />
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Valor a Pagar neste Acerto */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-500 dark:text-slate-400 mb-1">
+                Valor deste Pagamento (R$)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  ref={payAmountInputRef}
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0,00"
+                  value={payAmount}
+                  onChange={(e) => setPayAmount(e.target.value.replace(',', '.'))}
+                  onFocus={(e) => e.target.select()}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white font-mono text-base font-bold focus:border-amber-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setPayAmount(remainingBalance.toFixed(2))}
+                  className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 whitespace-nowrap cursor-pointer"
+                >
+                  Tudo
+                </button>
+              </div>
+            </div>
+
+            {/* Se dinheiro: Calculadora de Troco */}
+            {paymentMethod === 'CASH' && (
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-500 dark:text-slate-400 mb-1">
+                  Valor Entregue pelo Cliente (R$)
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="Ex: 100,00"
+                  value={cashTendered}
+                  onChange={(e) => setCashTendered(e.target.value.replace(',', '.'))}
+                  onFocus={(e) => e.target.select()}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white font-mono text-base font-bold focus:border-amber-500 focus:outline-none"
+                />
+                {cashGiven > 0 && (
+                  <div className="mt-1 flex justify-between text-xs font-bold">
+                    <span className="text-slate-500 dark:text-slate-400">Troco a Devolver:</span>
+                    <span className="text-emerald-600 dark:text-emerald-400 font-mono">
+                      R$ {change.toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {toPayNum > remainingBalance + 0.05 && (
+            <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 flex items-center gap-2 text-xs text-red-800 dark:text-red-300">
+              <AlertCircle className="w-4 h-4 shrink-0 text-red-500 dark:text-red-400" />
+              <span>
+                O valor é maior que o saldo restante (<strong>R$ {remainingBalance.toFixed(2)}</strong>). Para dinheiro, informe o troco em "Valor Entregue".
+              </span>
+            </div>
+          )}
+
+          {/* Alerta de Pagamento Parcial */}
+          {toPayNum < remainingBalance - 0.05 && (
+            <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/50 flex items-center gap-2 text-xs text-blue-800 dark:text-blue-300">
+              <AlertCircle className="w-4 h-4 shrink-0 text-blue-500 dark:text-blue-400" />
+              <span>
+                Pagamento parcial: a mesa continuará ocupada com saldo restante de{' '}
+                <strong>R$ {(remainingBalance - toPayNum).toFixed(2)}</strong>.
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Rodapé / Botões de Ação */}
+        <div className="p-4 sm:px-6 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="py-3 px-4 rounded-xl font-bold text-xs bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition cursor-pointer"
+          >
+            Voltar
+          </button>
+
+          {toPayNum < remainingBalance - 0.05 ? (
+            <button
+              type="button"
+              disabled={submitting || paymentSuccess}
+              onClick={() => handleExecutePayment(false)}
+              className="flex-1 py-3.5 px-4 rounded-xl font-black text-sm uppercase tracking-wide bg-blue-600 hover:bg-blue-500 text-white transition shadow-lg shadow-blue-600/20 active:scale-[0.98] cursor-pointer"
+            >
+              {paymentSuccess
+                ? 'Valor Abatido!'
+                : splitMode === 'amount'
+                  ? `Abater R$ ${toPayNum.toFixed(2)} da Conta`
+                  : `Registrar Pagamento Parcial (R$ ${toPayNum.toFixed(2)})`}
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={submitting || paymentSuccess}
+              onClick={() => handleExecutePayment(true)}
+              className="flex-1 py-3.5 px-4 rounded-xl font-black text-sm uppercase tracking-wide bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-slate-950 transition shadow-lg shadow-emerald-500/20 active:scale-[0.98] cursor-pointer"
+            >
+              {paymentSuccess ? 'Liquidado com Sucesso!' : `Confirmar Pagamento & Liberar Mesa (R$ ${toPayNum.toFixed(2)})`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="amberGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#d97706" />
+      <stop offset="100%" stop-color="#fbbf24" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.35" />
+    </filter>
+  </defs>
+  <!-- Fundo gradiente arredondado -->
+  <rect width="1024" height="1024" rx="228" fill="url(#amberGrad)" />
+  
+  <!-- Ícone Beer do Lucide centralizado com stroke preto #020617 -->
+  <g transform="translate(212, 212) scale(25)" stroke="#020617" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="url(#shadow)">
+    <path d="M17 11h1a3 3 0 0 1 0 6h-1" />
+    <path d="M9 12v6" />
+    <path d="M13 12v6" />
+    <path d="M14 7.5c-1 0-1.44.5-3 .5s-2-.5-3-.5-1.72.5-2.5.5a2.5 2.5 0 0 1 0-5c.78 0 1.57.5 2.5.5S9.44 2 11 2s2 1.5 3 1.5 1.72-.5 2.5-.5a2.5 2.5 0 0 1 0 5c-.78 0-1.5-.5-2.5-.5Z" />
+    <path d="M5 8v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8" />
+  </g>
+</svg>

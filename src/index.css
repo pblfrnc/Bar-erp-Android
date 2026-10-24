@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  body {
+    @apply bg-slate-100 text-slate-900 antialiased selection:bg-amber-500/30 selection:text-amber-700 transition-colors duration-150;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  html.dark body {
+    @apply bg-slate-950 text-slate-100 selection:bg-amber-500/30 selection:text-amber-200;
+  }
+}
+
+/* Garantia universal contra bloqueio de digitação ou seleção em inputs e formulários */
+input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]),
+textarea {
+  cursor: text !important;
+  pointer-events: auto !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+select,
+input[type="checkbox"],
+input[type="radio"],
+input[type="button"],
+input[type="submit"] {
+  cursor: pointer !important;
+  pointer-events: auto !important;
+}
+
+/* Escalas de acessibilidade para Baixa Visão */
+html.font-scale-normal {
+  font-size: 16px;
+}
+html.font-scale-large {
+  font-size: 19px;
+}
+html.font-scale-xlarge {
+  font-size: 23px;
+}
+
+html.font-scale-large .table-number,
+html.font-scale-xlarge .table-number {
+  font-size: 2.2em;
+  font-weight: 900;
+  letter-spacing: -0.05em;
+}
+
+/* Custom scrollbars for POS & KDS */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(241, 245, 249, 0.8);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(203, 213, 225, 0.9);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 1);
+}
+
+html.dark ::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.6);
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.8);
+}
+
+/* Thermal receipt & Kitchen ticket printable style */
+#thermal-receipt,
+#kitchen-ticket-receipt {
+  display: none;
+}
+
+@media print {
+  /* Fundo branco: impressora térmica com printBackground imprimiria o cinza do app como pontilhado */
+  html,
+  body {
+    background: white !important;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #thermal-receipt,
+  #thermal-receipt *,
+  #kitchen-ticket-receipt,
+  #kitchen-ticket-receipt * {
+    visibility: visible;
+  }
+  /* Só a raiz do cupom vira block; os filhos mantêm o próprio display (flex das linhas/colunas) */
+  #thermal-receipt,
+  #kitchen-ticket-receipt {
+    display: block !important;
+    position: absolute;
+    left: var(--printer-margin-left, 0mm);
+    top: var(--printer-margin-top, 0mm);
+    width: calc(var(--printer-paper-width, 80mm) - var(--printer-margin-left, 0mm) - var(--printer-margin-right, 0mm));
+    max-width: calc(var(--printer-paper-width, 80mm) - var(--printer-margin-left, 0mm) - var(--printer-margin-right, 0mm));
+    margin: 0;
+    padding: 0;
+    background: white;
+    color: black;
+    box-sizing: border-box;
+  }
+}

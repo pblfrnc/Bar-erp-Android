@@ -1,0 +1,657 @@
+import {
+  Table,
+  Order,
+  Product,
+  Category,
+  OrderItem,
+  CashShift,
+  CashSummary,
+  DashboardData,
+  KdsStatus,
+  KdsItem,
+  Waiter,
+  Supplier,
+  StaffPublicUser,
+  StaffMember,
+  LoggedUser,
+  PrinterSettings,
+  PriceHistory,
+  ModifierGroup,
+  Promotion,
+  DigitalMenuStatus
+} from '../types';
+
+
+import { getServerBaseUrl } from './socket';
+
+function getApiUrl(): string {
+  return `${getServerBaseUrl()}/api`;
+}
+
+// Cache local em memória para resposta instantânea (0ms) no tablet/celular do garçom
+let cachedCategories: Category[] | null = null;
+let cachedProducts: Product[] | null = null;
+
+async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 2): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 segundos de timeout
+
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    return res;
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    if (retries > 0) {
+      console.warn(`[Wi-Fi Resiliência] Falha de requisição em ${url}. Tentando novamente (${retries} restantes)...`);
+      await new Promise((r) => setTimeout(r, 600));
+      return fetchWithRetry(url, options, retries - 1);
+    }
+    throw new Error('Falha de conexão com o servidor do bar. Verifique o sinal do Wi-Fi.');
+  }
+}
+
+async function handleResponse<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || `Erro HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export interface EstablishmentInfo {
+  nomeFantasia: string | null;
+  razaoSocial: string | null;
+  cnpj: string | null;
+  ie: string | null;
+  endereco: string | null;
+}
+
+export const api = {
+  getApiUrl: () => getApiUrl(),
+  uploadXml: (formData: FormData) => fetch(`${getApiUrl()}/fiscal/import-xml`, { method: 'POST', body: formData }).then(r => r.json()),
+  applyXmlImport: (data: any) => fetch(`${getApiUrl()}/fiscal/apply-import`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
+  // Mesas
+  getTables: (): Promise<Table[]> =>
+    fetchWithRetry(`${getApiUrl()}/tables`).then(handleResponse<Table[]>),
+
+  createTable: (data: { number: number; name?: string; capacity: number; section: string }): Promise<Table> =>
+    fetchWithRetry(`${getApiUrl()}/tables`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Table>),
+
+  updateTable: (id: string, data: { number?: number; name?: string; capacity?: number; section?: string }): Promise<Table> =>
+    fetchWithRetry(`${getApiUrl()}/tables/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Table>),
+
+  deleteTable: (id: string): Promise<{ success: boolean; message: string }> =>
+    fetchWithRetry(`${getApiUrl()}/tables/${id}`, {
+      method: 'DELETE'
+    }).then(handleResponse<{ success: boolean; message: string }>),
+
+  batchUpdateSection: (tableIds: string[], section: string): Promise<{ success: boolean; count: number }> =>
+    fetchWithRetry(`${getApiUrl()}/tables/batch/section`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tableIds, section })
+    }).then(handleResponse<{ success: boolean; count: number }>),
+
+  renameSection: (oldSection: string, newSection: string): Promise<{ success: boolean; count: number }> =>
+    fetchWithRetry(`${getApiUrl()}/tables/sections/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldSection, newSection })
+    }).then(handleResponse<{ success: boolean; count: number }>),
+
+  openTable: (id: string, data: { customerName?: string; waiterName?: string; waiterId?: string; customerCount: number }): Promise<{ table: Table; order: Order }> =>
+    fetchWithRetry(`${getApiUrl()}/tables/${id}/open`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<{ table: Table; order: Order }>),
+
+  requestTableClosing: (id: string): Promise<Table> =>
+    fetchWithRetry(`${getApiUrl()}/tables/${id}/request-closing`, { method: 'POST' }).then(handleResponse<Table>),
+
+  reopenTable: (id: string): Promise<Table> =>
+    fetchWithRetry(`${getApiUrl()}/tables/${id}/reopen`, { method: 'POST' }).then(handleResponse<Table>),
+
+  transferTable: (id: string, targetTableId: string): Promise<{ success: boolean; message: string }> =>
+    fetchWithRetry(`${getApiUrl()}/tables/${id}/transfer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetTableId })
+    }).then(handleResponse<{ success: boolean; message: string }>),
+
+  mergeTables: (id: string, secondTableId: string): Promise<{ success: boolean; message: string }> =>
+    fetchWithRetry(`${getApiUrl()}/tables/${id}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secondTableId })
+    }).then(handleResponse<{ success: boolean; message: string }>),
+
+  // Comandas / Pedidos
+  getOrder: (id: string): Promise<Order> =>
+    fetchWithRetry(`${getApiUrl()}/orders/${id}`).then(handleResponse<Order>),
+
+  addOrderItems: (
+    orderId: string,
+    items: { productId: string; quantity: number; unitType?: 'UNIT' | 'BOX'; notes?: string; modifierOptionIds?: string[] }[]
+  ): Promise<{ order: Order; addedItems: OrderItem[] }> =>
+    fetchWithRetry(`${getApiUrl()}/orders/${orderId}/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    }).then(handleResponse<{ order: Order; addedItems: OrderItem[] }>),
+
+  removeOrderItem: (orderId: string, itemId: string): Promise<Order> =>
+    fetchWithRetry(`${getApiUrl()}/orders/${orderId}/items/${itemId}`, { method: 'DELETE' }).then(handleResponse<Order>),
+
+  toggleServiceFee: (orderId: string, active?: boolean, rate?: number): Promise<Order> =>
+    fetchWithRetry(`${getApiUrl()}/orders/${orderId}/service-fee`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active, rate })
+    }).then(handleResponse<Order>),
+
+  applyDiscount: (orderId: string, discount: number): Promise<Order> =>
+    fetchWithRetry(`${getApiUrl()}/orders/${orderId}/discount`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ discount })
+    }).then(handleResponse<Order>),
+
+  
+  markAsLoss: (orderId: string): Promise<{ success: boolean; message: string; lostAmount: number }> =>
+    fetchWithRetry(`${getApiUrl()}/orders/${orderId}/loss`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }).then(res => {
+      if (!res.ok) return res.json().then(e => Promise.reject(e));
+      return res.json();
+    }),
+
+  quickSale: (data: {
+    items: { productId: string; quantity: number; unitType?: 'UNIT' | 'BOX'; notes?: string; modifierOptionIds?: string[] }[];
+    payment: { method: string; amount?: number; cashTendered?: number; notes?: string };
+    customerName?: string;
+    discount?: number;
+  }): Promise<{ success: boolean; order: Order; change: number; message: string }> =>
+    fetchWithRetry(`${getApiUrl()}/orders/quick-sale`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(res => {
+      if (!res.ok) return res.json().then(e => Promise.reject(e));
+      return res.json();
+    }),
+
+  payOrder: (
+    orderId: string,
+    data: { payments: { amount: number; method: string; notes?: string }[]; closeOrder?: boolean; customerId?: string; paidItems?: { itemId: string; quantity: number }[] }
+  ): Promise<{ success: boolean; order: Order; isFullyPaid: boolean }> =>
+    fetchWithRetry(`${getApiUrl()}/orders/${orderId}/pay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // requestId: as novas tentativas do fetchWithRetry não lançam o mesmo pagamento duas vezes
+      body: JSON.stringify({ ...data, requestId: `${Date.now()}-${Math.random().toString(36).slice(2)}` })
+    }).then(handleResponse<{ success: boolean; order: Order; isFullyPaid: boolean }>),
+
+  getOrderHistory: (limit = 100, date?: string): Promise<Order[]> => {
+    const params = new URLSearchParams();
+    if (limit) params.append('limit', String(limit));
+    if (date) params.append('date', date);
+    return fetchWithRetry(`${getApiUrl()}/orders/history?${params.toString()}`).then(handleResponse<Order[]>);
+  },
+
+  // KDS
+  getKdsItems: (station?: string): Promise<KdsItem[]> => {
+    const query = station && station !== 'ALL' ? `?station=${station}` : '';
+    return fetchWithRetry(`${getApiUrl()}/kds${query}`).then(handleResponse<KdsItem[]>);
+  },
+
+  updateKdsItemStatus: (itemId: string, status: KdsStatus): Promise<OrderItem> =>
+    fetchWithRetry(`${getApiUrl()}/kds/items/${itemId}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status })
+    }).then(handleResponse<OrderItem>),
+
+  markAllReady: (orderId: string, station?: string): Promise<{ success: boolean }> =>
+    fetchWithRetry(`${getApiUrl()}/kds/orders/${orderId}/ready-all`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ station })
+    }).then(handleResponse<{ success: boolean }>),
+
+  batchUpdateKdsStatus: (orderId: string, status: KdsStatus, station?: string): Promise<{ success: boolean }> =>
+    fetchWithRetry(`${getApiUrl()}/kds/orders/${orderId}/batch-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, station })
+    }).then(handleResponse<{ success: boolean }>),
+
+  // Produtos & Cardápio (com cache em memória para abertura instantânea do cardápio)
+  getProducts: async (categoryId?: string, search?: string, forceRefresh = false): Promise<Product[]> => {
+    if (!categoryId && !search && cachedProducts && !forceRefresh) {
+      // Revalida em background sem travar a UI
+      fetchWithRetry(`${getApiUrl()}/products`)
+        .then(handleResponse<Product[]>)
+        .then((p) => { cachedProducts = p; })
+        .catch(() => {});
+      return cachedProducts;
+    }
+
+    const params = new URLSearchParams();
+    if (categoryId) params.append('categoryId', categoryId);
+    if (search) params.append('search', search);
+    const data = await fetchWithRetry(`${getApiUrl()}/products?${params.toString()}`).then(handleResponse<Product[]>);
+    if (!categoryId && !search) cachedProducts = data;
+    return data;
+  },
+
+  lookupProductByEan: async (ean: string, mode: 'all' | 'xml' | 'global' = 'all'): Promise<any> => {
+    const qmode = mode !== 'all' ? `?mode=${mode}` : '';
+    return fetchWithRetry(`${getApiUrl()}/products/lookup-ean/${encodeURIComponent(ean)}${qmode}`).then(handleResponse<any>);
+  },
+
+  getNextProductCode: async (categoryId: string): Promise<{ categoryId: string; nextCode: string }> => {
+    return fetchWithRetry(`${getApiUrl()}/products/categories/${encodeURIComponent(categoryId)}/next-code`).then(handleResponse<{ categoryId: string; nextCode: string }>);
+  },
+
+  createProduct: async (data: Partial<Product>): Promise<Product> => {
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Product>);
+  },
+
+  updateProduct: async (id: string, data: Partial<Product>): Promise<Product> => {
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Product>);
+  },
+
+  // Foto do produto no cardápio digital (já redimensionada no navegador)
+  productImageUrl: (id: string, hash: string) => `${getApiUrl()}/products/${id}/image?v=${hash}`,
+
+  uploadProductImage: async (id: string, image: Blob): Promise<{ imageHash: string }> => {
+    cachedProducts = null;
+    return fetch(`${getApiUrl()}/products/${id}/image`, {
+      method: 'PUT',
+      headers: { 'Content-Type': image.type || 'image/jpeg' },
+      body: image
+    }).then(handleResponse<{ imageHash: string }>);
+  },
+
+  deleteProductImage: async (id: string): Promise<void> => {
+    cachedProducts = null;
+    await fetch(`${getApiUrl()}/products/${id}/image`, { method: 'DELETE' }).then(handleResponse<any>);
+  },
+
+  setMenuVisibility: async (show: string[], hide: string[]): Promise<void> => {
+    cachedProducts = null;
+    await fetchWithRetry(`${getApiUrl()}/products/menu-visibility`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ show, hide })
+    }).then(handleResponse<any>);
+  },
+
+  getPriceHistory: async (productId: string): Promise<PriceHistory[]> => {
+    return fetchWithRetry(`${getApiUrl()}/products/${productId}/price-history`).then(handleResponse<PriceHistory[]>);
+  },
+
+  getStockReport: async (): Promise<any> => {
+    return fetchWithRetry(`${getApiUrl()}/products/stock-report`).then(handleResponse<any>);
+  },
+
+  getSystemSettings: async (): Promise<any> => {
+    return fetchWithRetry(`${getApiUrl()}/settings`).then(handleResponse<any>);
+  },
+
+  updateSystemSettings: async (data: { defaultProfitMargin?: number; restaurantName?: string }): Promise<any> => {
+    return fetchWithRetry(`${getApiUrl()}/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<any>);
+  },
+
+  adjustStock: async (id: string, adjustment?: number, newStock?: number): Promise<Product> => {
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products/${id}/stock`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adjustment, newStock })
+    }).then(handleResponse<Product>);
+  },
+
+  deleteProduct: async (id: string, force = true): Promise<{ success: boolean; message: string }> => {
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products/${id}${force ? '?force=true' : ''}`, {
+      method: 'DELETE'
+    }).then(handleResponse<{ success: boolean; message: string }>);
+  },
+
+  createCategory: async (data: { name: string; icon?: string; sortOrder?: number; codeStart?: number }): Promise<Category> => {
+    cachedCategories = null;
+    return fetchWithRetry(`${getApiUrl()}/products/categories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Category>);
+  },
+
+  updateCategory: async (id: string, data: { name?: string; icon?: string; sortOrder?: number; codeStart?: number }): Promise<Category> => {
+    cachedCategories = null;
+    return fetchWithRetry(`${getApiUrl()}/products/categories/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Category>);
+  },
+
+  resequenceCategory: async (id: string): Promise<{ ok: boolean; atualizados: number; mensagem: string }> => {
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products/categories/${id}/resequence`, {
+      method: 'POST'
+    }).then(handleResponse<{ ok: boolean; atualizados: number; mensagem: string }>);
+  },
+
+  fixDuplicateCodes: async (mode: 'duplicates_only' | 'resequence_all' = 'duplicates_only'): Promise<{
+    ok: boolean;
+    duplicadosEncontrados: number;
+    atualizados: number;
+    mensagem: string;
+  }> => {
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products/fix-duplicate-codes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode })
+    }).then(handleResponse<{
+      ok: boolean;
+      duplicadosEncontrados: number;
+      atualizados: number;
+      mensagem: string;
+    }>);
+  },
+
+  deleteCategory: async (id: string, force = false): Promise<{ success: boolean; message: string }> => {
+    cachedCategories = null;
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products/categories/${id}${force ? '?force=true' : ''}`, {
+      method: 'DELETE'
+    }).then(handleResponse<{ success: boolean; message: string }>);
+  },
+
+  // Fornecedores
+  getSuppliers: async (search?: string): Promise<Supplier[]> => {
+    const params = new URLSearchParams();
+    if (search) params.append('search', search);
+    return fetchWithRetry(`${getApiUrl()}/suppliers?${params.toString()}`).then(handleResponse<Supplier[]>);
+  },
+
+  createSupplier: async (data: Partial<Supplier>): Promise<Supplier> => {
+    return fetchWithRetry(`${getApiUrl()}/suppliers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Supplier>);
+  },
+
+  updateSupplier: async (id: string, data: Partial<Supplier>): Promise<Supplier> => {
+    return fetchWithRetry(`${getApiUrl()}/suppliers/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Supplier>);
+  },
+
+  deleteSupplier: async (id: string): Promise<{ success: boolean; message: string }> => {
+    return fetchWithRetry(`${getApiUrl()}/suppliers/${id}`, {
+      method: 'DELETE'
+    }).then(handleResponse<{ success: boolean; message: string }>);
+  },
+
+  getCategories: async (forceRefresh = false): Promise<Category[]> => {
+    if (cachedCategories && !forceRefresh) {
+      // Revalida em background
+      fetchWithRetry(`${getApiUrl()}/products/categories/all`)
+        .then(handleResponse<Category[]>)
+        .then((c) => { cachedCategories = c; })
+        .catch(() => {});
+      return cachedCategories;
+    }
+    const cats = await fetchWithRetry(`${getApiUrl()}/products/categories/all`).then(handleResponse<Category[]>);
+    cachedCategories = cats;
+    return cats;
+  },
+
+  // Caixa & PDV
+  getCurrentCashShift: (): Promise<{ isOpen: boolean; shift: CashShift | null; summary?: CashSummary }> =>
+    fetchWithRetry(`${getApiUrl()}/cash/current`).then(handleResponse<{ isOpen: boolean; shift: CashShift | null; summary?: CashSummary }>),
+
+  openCashShift: (initialBalance: number, openedBy: string, notes?: string): Promise<CashShift> =>
+    fetchWithRetry(`${getApiUrl()}/cash/open`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initialBalance, openedBy, notes })
+    }).then(handleResponse<CashShift>),
+
+  addCashTransaction: (type: 'SUPPLY' | 'WITHDRAWAL', amount: number, reason: string): Promise<any> =>
+    fetchWithRetry(`${getApiUrl()}/cash/transaction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, amount, reason })
+    }).then(handleResponse<any>),
+
+  closeCashShift: (finalCashCount: number, closedBy: string, notes?: string): Promise<any> =>
+    fetchWithRetry(`${getApiUrl()}/cash/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ finalCashCount, closedBy, notes })
+    }).then(handleResponse<any>),
+
+  reopenLastCashShift: (): Promise<any> =>
+    fetchWithRetry(`${getApiUrl()}/cash/reopen-last`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    }).then(handleResponse<any>),
+
+  // Dashboard
+  getAuditLogs: () => fetchWithRetry(`${getApiUrl()}/audit-logs`).then(handleResponse<any[]>),
+
+  getDashboardData: (date?: string): Promise<DashboardData> => {
+    const params = date ? `?date=${date}` : '';
+    return fetchWithRetry(`${getApiUrl()}/dashboard${params}`).then(handleResponse<DashboardData>);
+  },
+
+  // Garçons & Comissões
+  getCustomers: () => fetchWithRetry(`${getApiUrl()}/customers`).then(handleResponse<any[]>),
+  getBackupStatus: () => fetchWithRetry(`${getApiUrl()}/system/backup-status`).then(handleResponse<any>),
+
+  createCustomer: (data: any) => fetchWithRetry(`${getApiUrl()}/customers`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(handleResponse<any>),
+
+  getWaiters: (all: boolean = false): Promise<Waiter[]> =>
+    fetchWithRetry(`${getApiUrl()}/waiters?all=${all}`).then(handleResponse<Waiter[]>),
+
+  createWaiter: (data: { name: string; code?: string; commissionRate?: number }): Promise<Waiter> =>
+    fetchWithRetry(`${getApiUrl()}/waiters`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Waiter>),
+
+  updateWaiter: (id: string, data: Partial<Waiter>): Promise<Waiter> =>
+    fetchWithRetry(`${getApiUrl()}/waiters/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<Waiter>),
+
+  deleteWaiter: (id: string): Promise<{ success: boolean; message?: string; waiter?: Waiter }> =>
+    fetchWithRetry(`${getApiUrl()}/waiters/${id}`, {
+      method: 'DELETE'
+    }).then(handleResponse<{ success: boolean; message?: string; waiter?: Waiter }>),
+
+  // Gestão de Funcionários & Autenticação
+  getStaffPublicList: (): Promise<StaffPublicUser[]> =>
+    fetchWithRetry(`${getApiUrl()}/staff/public-list`).then(handleResponse<StaffPublicUser[]>),
+
+  loginStaff: async (userId: string, password: string): Promise<{ success: boolean; user: LoggedUser }> => {
+    const res = await fetch(`${getApiUrl()}/staff/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, password })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err: any = new Error(data.error || 'Erro ao realizar login');
+      err.lockedOut = data.lockedOut;
+      err.remainingSeconds = data.remainingSeconds;
+      err.attempts = data.attempts;
+      throw err;
+    }
+    return data;
+  },
+
+  getStaffList: (): Promise<StaffMember[]> =>
+    fetchWithRetry(`${getApiUrl()}/staff`).then(handleResponse<StaffMember[]>),
+
+  createStaff: (data: { name: string; role: string; password: string; permissions: string[]; active?: boolean }): Promise<StaffMember> =>
+    fetchWithRetry(`${getApiUrl()}/staff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<StaffMember>),
+
+  updateStaff: (id: string, data: Partial<StaffMember & { password?: string }>): Promise<StaffMember> =>
+    fetchWithRetry(`${getApiUrl()}/staff/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(handleResponse<StaffMember>),
+
+  deleteStaff: (id: string): Promise<{ success: boolean; message: string }> =>
+    fetchWithRetry(`${getApiUrl()}/staff/${id}`, {
+      method: 'DELETE'
+    }).then(handleResponse<{ success: boolean; message: string }>),
+
+  // Imprime o recibo da mesa na impressora do computador do caixa (pedido feito pelo celular).
+  // Sem retry automático: repetir a requisição poderia imprimir o recibo em duplicidade.
+  printReceiptOnCashier: (orderId: string, requestedBy?: string): Promise<{ ok: boolean }> =>
+    fetch(`${getApiUrl()}/orders/${orderId}/print-receipt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestedBy })
+    }).then(handleResponse<{ ok: boolean }>),
+
+  // Dados públicos do estabelecimento (cabeçalho de comprovantes não fiscais)
+  getEstablishment: (): Promise<EstablishmentInfo> =>
+    fetchWithRetry(`${getApiUrl()}/fiscal/establishment`).then(handleResponse<EstablishmentInfo>),
+
+  // Adicionais / perguntas do pedido
+  getModifierGroups: (): Promise<ModifierGroup[]> =>
+    fetchWithRetry(`${getApiUrl()}/products/modifier-groups`).then(handleResponse<ModifierGroup[]>),
+
+  saveModifierGroup: (
+    group: { id?: string; name: string; minSelect: number; maxSelect: number; isActive?: boolean; options: { id?: string; name: string; price: number; isActive?: boolean }[] }
+  ): Promise<ModifierGroup> => {
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products/modifier-groups${group.id ? `/${group.id}` : ''}`, {
+      method: group.id ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(group)
+    }).then(handleResponse<ModifierGroup>);
+  },
+
+  deleteModifierGroup: (id: string): Promise<{ success: boolean }> => {
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products/modifier-groups/${id}`, { method: 'DELETE' }).then(handleResponse<{ success: boolean }>);
+  },
+
+  setProductModifierGroups: (productId: string, groupIds: string[]): Promise<{ success: boolean }> => {
+    cachedProducts = null;
+    return fetchWithRetry(`${getApiUrl()}/products/${productId}/modifier-groups`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ groupIds })
+    }).then(handleResponse<{ success: boolean }>);
+  },
+
+  // Promoções do dia / Happy Hour
+  getPromotions: (): Promise<Promotion[]> =>
+    fetchWithRetry(`${getApiUrl()}/products/promotions`).then(handleResponse<Promotion[]>),
+
+  getActivePromotions: (): Promise<{ serverTime: string; serverTimezoneOffset?: number; promotions: Promotion[] }> =>
+    fetchWithRetry(`${getApiUrl()}/products/promotions/active`).then(handleResponse<{ serverTime: string; serverTimezoneOffset?: number; promotions: Promotion[] }>),
+
+  savePromotion: (
+    promo: { id?: string; name: string; isActive: boolean; daysOfWeek: number[]; startTime: string; endTime: string; discountType: 'PERCENT' | 'FIXED_PRICE'; value: number; productIds: string[]; categoryIds: string[] }
+  ): Promise<Promotion> =>
+    fetchWithRetry(`${getApiUrl()}/products/promotions${promo.id ? `/${promo.id}` : ''}`, {
+      method: promo.id ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(promo)
+    }).then(handleResponse<Promotion>),
+
+  deletePromotion: (id: string): Promise<{ success: boolean }> =>
+    fetchWithRetry(`${getApiUrl()}/products/promotions/${id}`, { method: 'DELETE' }).then(handleResponse<{ success: boolean }>),
+
+  // Configurações de Impressoras Térmicas
+  getPrinterSettings: (): Promise<PrinterSettings> =>
+    fetchWithRetry(`${getApiUrl()}/settings/printer`).then(handleResponse<PrinterSettings>),
+
+  savePrinterSettings: (settings: Partial<PrinterSettings>): Promise<{ success: boolean; settings: PrinterSettings }> =>
+    fetchWithRetry(`${getApiUrl()}/settings/printer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    }).then(handleResponse<{ success: boolean; settings: PrinterSettings }>),
+
+  // Backup externo do banco (Google Drive / OneDrive / pen drive)
+  saveBackupSettings: (settings: { externalFolder?: string; enabled?: boolean; keep?: number }) =>
+    fetchWithRetry(`${getApiUrl()}/system/backup-settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    }).then(handleResponse<any>),
+
+  // Cardápio digital por QR na mesa
+  getDigitalMenu: () => fetchWithRetry(`${getApiUrl()}/system/digital-menu`).then(handleResponse<DigitalMenuStatus>),
+
+  // fetch direto: a publicação depende da internet e pode passar dos 8s do fetchWithRetry
+  saveDigitalMenu: (settings: Partial<Pick<DigitalMenuStatus, 'enabled' | 'title' | 'message' | 'hiddenCategoryIds' | 'hideSoldOut' | 'ignoreStock'>> & { siteUrl?: string }) =>
+    fetch(`${getApiUrl()}/system/digital-menu`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    }).then(handleResponse<{ status: DigitalMenuStatus; publishError: string | null }>),
+
+  publishDigitalMenu: () =>
+    fetch(`${getApiUrl()}/system/digital-menu/publish`, { method: 'POST' }).then(handleResponse<DigitalMenuStatus>),
+
+  // fetch direto: o backup pode passar dos 8s do fetchWithRetry e o reenvio não ajudaria
+  runBackupNow: () =>
+    fetch(`${getApiUrl()}/system/backup-now`, { method: 'POST' }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Erro HTTP ${res.status}`);
+      return data;
+    })
+};
+

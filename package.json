@@ -1,0 +1,46 @@
+{
+  "name": "barerp-android",
+  "private": true,
+  "version": "2.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "build:waiter": "tsc -b && vite build --mode waiter",
+    "build:kds": "tsc -b && vite build --mode kds",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "cap:sync": "npx cap sync android",
+    "cap:open": "npx cap open android",
+    "cap:build": "npm run build && npx cap sync android",
+    "cap:build:waiter": "npm run build:waiter && npx cap sync android",
+    "cap:build:kds": "npm run build:kds && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.1",
+    "@capacitor/core": "^8.5.1",
+    "clsx": "^2.1.1",
+    "jsqr": "^1.4.0",
+    "lucide-react": "^1.41.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "socket.io-client": "^4.8.3",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/jest-dom": "^6.5.0",
+    "@testing-library/react": "^16.0.0",
+    "@types/node": "^24.13.3",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "oxlint": "^1.79.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2"
+  }
+}

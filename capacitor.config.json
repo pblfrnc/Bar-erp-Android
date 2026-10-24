@@ -1,0 +1,14 @@
+{
+  "appId": "com.barerp.app",
+  "appName": "BarERP Garçom",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  }
+}
